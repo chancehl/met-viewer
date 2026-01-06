@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 type MetSearchResponse = {
   total: number;
@@ -24,8 +24,8 @@ type MetObject = {
 
 const PAGE_SIZE = 100;
 const API_BASE = 'https://collectionapi.metmuseum.org/public/collection/v1';
-const MAX_CONCURRENT = 6;
-const MIN_DELAY_MS = 80;
+const MAX_CONCURRENT = 3;
+const MIN_DELAY_MS = 200;
 
 const fetchObject = async (
   objectID: number,
@@ -36,55 +36,6 @@ const fetchObject = async (
     throw new Error(`Failed to load object ${objectID}`);
   }
   return response.json();
-};
-
-const runWithConcurrency = async <T,>(
-  items: number[],
-  handler: (id: number) => Promise<T | null>,
-  maxConcurrent: number,
-  minDelayMs: number,
-  onItem?: (value: T) => void,
-): Promise<T[]> => {
-  const results: T[] = [];
-  let currentIndex = 0;
-  let active = 0;
-  let lastStart = 0;
-
-  return new Promise((resolve, reject) => {
-    const startNext = () => {
-      if (currentIndex >= items.length && active === 0) {
-        resolve(results);
-        return;
-      }
-
-      while (active < maxConcurrent && currentIndex < items.length) {
-        const id = items[currentIndex++];
-        const now = Date.now();
-        const wait = Math.max(0, minDelayMs - (now - lastStart));
-        lastStart = now + wait;
-        active += 1;
-
-        setTimeout(() => {
-          handler(id)
-            .then((value) => {
-              if (value) {
-                results.push(value);
-                if (onItem) {
-                  onItem(value);
-                }
-              }
-            })
-            .catch(reject)
-            .finally(() => {
-              active -= 1;
-              startNext();
-            });
-        }, wait);
-      }
-    };
-
-    startNext();
-  });
 };
 
 const formatArtist = (object: MetObject) => {
@@ -108,21 +59,107 @@ export default function App() {
   const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState('');
   const [objectIDs, setObjectIDs] = useState<number[]>([]);
-  const [items, setItems] = useState<MetObject[]>([]);
   const [selected, setSelected] = useState<MetObject | null>(null);
   const [selectedDetails, setSelectedDetails] = useState<MetObject | null>(
     null,
   );
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [downloadStatus, setDownloadStatus] = useState('');
+  const [loadedById, setLoadedById] = useState<Record<number, MetObject>>({});
   const searchIdRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const cacheRef = useRef<Map<number, MetObject>>(new Map());
+  const queueRef = useRef<number[]>([]);
+  const pendingRef = useRef<Set<number>>(new Set());
+  const activeRef = useRef(0);
+  const lastStartRef = useRef(0);
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  const tileRefs = useRef<Set<HTMLButtonElement>>(new Set());
+
+  const loadedCount = useMemo(
+    () => Object.keys(loadedById).length,
+    [loadedById],
+  );
 
   const isEmptyState = useMemo(
     () =>
-      !isSearching && !items.length && !objectIDs.length && !submittedQuery,
-    [isSearching, items.length, objectIDs.length, submittedQuery],
+      !isSearching && !loadedCount && !objectIDs.length && !submittedQuery,
+    [isSearching, loadedCount, objectIDs.length, submittedQuery],
+  );
+
+  const processQueue = useCallback(
+    (searchId: number, signal?: AbortSignal) => {
+      while (activeRef.current < MAX_CONCURRENT && queueRef.current.length > 0) {
+        const id = queueRef.current.shift();
+        if (id === undefined) {
+          continue;
+        }
+        activeRef.current += 1;
+        const now = Date.now();
+        const wait = Math.max(0, MIN_DELAY_MS - (now - lastStartRef.current));
+        lastStartRef.current = now + wait;
+
+        setTimeout(async () => {
+          try {
+            if (searchIdRef.current !== searchId) {
+              return;
+            }
+            const cached = cacheRef.current.get(id);
+            if (cached) {
+              setLoadedById((prev) => {
+                if (prev[id]) {
+                  return prev;
+                }
+                return { ...prev, [id]: cached };
+              });
+              return;
+            }
+            const item = await fetchObject(id, signal);
+            if (!item.primaryImageSmall && !item.primaryImage) {
+              return;
+            }
+            cacheRef.current.set(id, item);
+            setLoadedById((prev) => {
+              if (prev[id]) {
+                return prev;
+              }
+              return { ...prev, [id]: item };
+            });
+          } catch (err) {
+            if (err instanceof DOMException && err.name === 'AbortError') {
+              return;
+            }
+          } finally {
+            pendingRef.current.delete(id);
+            activeRef.current -= 1;
+            processQueue(searchId, signal);
+          }
+        }, wait);
+      }
+    },
+    [],
+  );
+
+  const enqueueFetch = useCallback(
+    (id: number, searchId: number, signal?: AbortSignal) => {
+      if (pendingRef.current.has(id)) {
+        return;
+      }
+      const cached = cacheRef.current.get(id);
+      if (cached) {
+        setLoadedById((prev) => {
+          if (prev[id]) {
+            return prev;
+          }
+          return { ...prev, [id]: cached };
+        });
+        return;
+      }
+      pendingRef.current.add(id);
+      queueRef.current.push(id);
+      processQueue(searchId, signal);
+    },
+    [processQueue],
   );
 
   const runSearch = async (term: string) => {
@@ -141,10 +178,13 @@ export default function App() {
     setError('');
     setIsSearching(true);
     setSubmittedQuery(trimmed);
-    setItems([]);
     setObjectIDs([]);
+    setLoadedById({});
     setSelected(null);
     setSelectedDetails(null);
+    queueRef.current = [];
+    pendingRef.current.clear();
+    tileRefs.current.clear();
 
     try {
       const response = await fetch(
@@ -161,7 +201,19 @@ export default function App() {
       }
       setObjectIDs(ids);
       if (ids.length > 0) {
-        await loadNextPage(ids, searchId, controller.signal);
+        const cachedItems: Record<number, MetObject> = {};
+        const missing: number[] = [];
+        ids.forEach((id) => {
+        const cached = cacheRef.current.get(id);
+        if (cached) {
+          cachedItems[id] = cached;
+        } else {
+          missing.push(id);
+        }
+      });
+        if (Object.keys(cachedItems).length > 0) {
+          setLoadedById(cachedItems);
+        }
       }
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
@@ -175,51 +227,6 @@ export default function App() {
     }
   };
 
-  const loadNextPage = async (
-    ids = objectIDs,
-    searchId = searchIdRef.current,
-    signal?: AbortSignal,
-  ) => {
-    if (searchIdRef.current !== searchId) {
-      return;
-    }
-    if (!ids.length) {
-      return;
-    }
-    await runWithConcurrency(
-      ids,
-      async (id) => {
-        const cached = cacheRef.current.get(id);
-        if (cached) {
-          return cached;
-        }
-        try {
-          const item = await fetchObject(id, signal);
-          if (!item.primaryImageSmall && !item.primaryImage) {
-            return null;
-          }
-          cacheRef.current.set(id, item);
-          return item;
-        } catch {
-          return null;
-        }
-      },
-      MAX_CONCURRENT,
-      MIN_DELAY_MS,
-      (value) => {
-        setItems((prev) => {
-          if (prev.find((item) => item.objectID === value.objectID)) {
-            return prev;
-          }
-          return [...prev, value];
-        });
-      },
-    );
-    if (searchIdRef.current !== searchId) {
-      return;
-    }
-  };
-
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
     runSearch(query);
@@ -230,8 +237,11 @@ export default function App() {
     abortRef.current?.abort();
     setQuery('');
     setSubmittedQuery('');
-    setItems([]);
     setObjectIDs([]);
+    setLoadedById({});
+    queueRef.current = [];
+    pendingRef.current.clear();
+    tileRefs.current.clear();
     setIsSearching(false);
     setError('');
     setSelected(null);
@@ -286,6 +296,40 @@ export default function App() {
     }
   };
 
+  useEffect(() => {
+    observerRef.current?.disconnect();
+    observerRef.current = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) {
+            return;
+          }
+          const target = entry.target as HTMLElement;
+          const id = Number(target.dataset.objectId);
+          if (!Number.isNaN(id)) {
+            enqueueFetch(id, searchIdRef.current, abortRef.current?.signal);
+          }
+          observerRef.current?.unobserve(target);
+        });
+      },
+      { rootMargin: '400px' },
+    );
+    tileRefs.current.forEach((node) => observerRef.current?.observe(node));
+
+    return () => {
+      observerRef.current?.disconnect();
+      observerRef.current = null;
+    };
+  }, [enqueueFetch]);
+
+  const registerTile = useCallback((node: HTMLButtonElement | null) => {
+    if (!node) {
+      return;
+    }
+    tileRefs.current.add(node);
+    observerRef.current?.observe(node);
+  }, []);
+
   const activeDetails = selectedDetails || selected;
 
   return (
@@ -308,7 +352,7 @@ export default function App() {
           </div>
         )}
 
-        {isSearching && !items.length && (
+        {isSearching && !loadedCount && (
           <div className="empty-state">
             <h2>Searching…</h2>
             <p>Gathering artworks from the collection.</p>
@@ -317,7 +361,6 @@ export default function App() {
 
         {!isSearching &&
           submittedQuery &&
-          !items.length &&
           !objectIDs.length &&
           !error && (
           <div className="empty-state">
@@ -328,27 +371,39 @@ export default function App() {
 
         {error && <div className="error-banner">{error}</div>}
 
-        {!!items.length && (
+        {!!objectIDs.length && (
           <>
             <div className="mosaic-grid">
-              {items.map((item) => (
-                <button
-                  key={item.objectID}
-                  className="mosaic-card"
-                  type="button"
-                  onClick={() => handleSelect(item)}
-                >
-                  <img
-                    src={item.primaryImageSmall || item.primaryImage}
-                    alt={item.title}
-                    loading="lazy"
-                  />
-                  <div className="mosaic-caption">
-                    <span>{item.title}</span>
-                    <small>{item.objectDate || item.objectName}</small>
-                  </div>
-                </button>
-              ))}
+              {objectIDs.map((objectID) => {
+                const item = loadedById[objectID];
+                return (
+                  <button
+                    key={objectID}
+                    className={`mosaic-card${item ? '' : ' is-loading'}`}
+                    type="button"
+                    onClick={() => item && handleSelect(item)}
+                    ref={registerTile}
+                    data-object-id={objectID}
+                    disabled={!item}
+                  >
+                    {item ? (
+                      <>
+                        <img
+                          src={item.primaryImageSmall || item.primaryImage}
+                          alt={item.title}
+                          loading="lazy"
+                        />
+                        <div className="mosaic-caption">
+                          <span>{item.title}</span>
+                          <small>{item.objectDate || item.objectName}</small>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="mosaic-placeholder" aria-hidden="true" />
+                    )}
+                  </button>
+                );
+              })}
             </div>
             <div className="sentinel">Showing up to {PAGE_SIZE} results.</div>
           </>

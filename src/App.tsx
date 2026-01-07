@@ -12,6 +12,24 @@ import useMetSearch, { MET_PAGE_SIZE } from './hooks/useMetSearch';
 import { buildDefaultFilename } from './lib/met';
 import type { MetObject } from './types/met';
 
+const LOADING_FACTS = [
+  'The Met holds more than two million works of art across 5,000 years.',
+  'The museum opened in 1872 with just a few hundred objects.',
+  'Many Met galleries rotate objects to protect light-sensitive works.',
+  'The Met Cloisters is a separate site dedicated to medieval art and architecture.',
+  'Public-domain images from the Met can be downloaded in high resolution.',
+  'The Temple of Dendur was dismantled in Egypt and reassembled at the Met.',
+  'The American Wing at the Met opened in 1924.',
+  'Some paintings at the Met have frames made by the original artists.',
+  'The Met hosts a rooftop garden with seasonal art installations.',
+  'Arms and armor galleries include suits crafted for both war and ceremony.',
+  'The Met is one of the largest art museums by gallery space.',
+  'Gallery lighting is tuned to preserve pigments and textiles.',
+  'The Met has a dedicated conservation department for paper, textiles, and more.',
+  'Many ancient sculptures at the Met still show traces of original paint.',
+  'The Met collection includes musical instruments from around the world.',
+];
+
 export default function App() {
   const [query, setQuery] = useState('');
   const {
@@ -107,7 +125,10 @@ export default function App() {
         {error && <ErrorBanner message={error} />}
 
         {isSearching && (
-          <LoadingState message="Loading artworks and images…" />
+          <LoadingState
+            message="Loading artwork and curating highlights..."
+            facts={LOADING_FACTS}
+          />
         )}
 
         {!!results.length && !isSearching && (

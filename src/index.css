@@ -87,23 +87,51 @@ input {
   padding: 48px 0;
 }
 
-.spinner {
-  width: 36px;
-  height: 36px;
-  border-radius: 50%;
-  border: 4px solid rgba(46, 39, 28, 0.12);
-  border-top-color: var(--accent);
-  animation: spin 0.9s linear infinite;
-  margin-bottom: 16px;
+.loading-state {
+  max-width: 560px;
+  padding: 48px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
-.empty-state .spinner {
-  display: inline-block;
+.loading-message {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--accent-dark);
 }
 
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+.loading-fact {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+  animation: dropIn 0.5s ease;
+}
+
+.fact-label {
+  display: block;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--accent-dark);
+  margin-bottom: 8px;
+}
+
+@keyframes dropIn {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 
@@ -202,6 +230,9 @@ input {
 }
 
 .search-bar button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   border: none;
   background: var(--accent);
   color: #fff;
@@ -209,6 +240,15 @@ input {
   border-radius: 12px;
   font-weight: 600;
   cursor: pointer;
+}
+
+.button-spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+  animation: spin 0.9s linear infinite;
 }
 
 .search-bar button:disabled {

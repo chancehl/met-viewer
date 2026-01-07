@@ -2,7 +2,9 @@ import { useMemo, useRef, useState } from 'react';
 import type { MetObject, MetSearchResponse } from '../types/met';
 
 const PAGE_SIZE = 50;
-const API_BASE = 'https://collectionapi.metmuseum.org/public/collection/v1';
+const API_BASE = import.meta.env.DEV
+  ? '/met/public/collection/v1'
+  : 'https://collectionapi.metmuseum.org/public/collection/v1';
 const MAX_CONCURRENT = 4;
 const MIN_DELAY_MS = 60;
 

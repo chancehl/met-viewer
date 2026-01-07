@@ -23,7 +23,14 @@ export default function SearchBar({
         aria-label="Search the Met collection"
       />
       <button type="submit" disabled={isSearching}>
-        {isSearching ? 'Searching…' : 'Search'}
+        {isSearching ? (
+          <>
+            <span className="button-spinner" aria-hidden="true" />
+            Searching…
+          </>
+        ) : (
+          'Search'
+        )}
       </button>
     </form>
   );

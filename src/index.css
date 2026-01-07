@@ -87,6 +87,26 @@ input {
   padding: 48px 0;
 }
 
+.spinner {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 4px solid rgba(46, 39, 28, 0.12);
+  border-top-color: var(--accent);
+  animation: spin 0.9s linear infinite;
+  margin-bottom: 16px;
+}
+
+.empty-state .spinner {
+  display: inline-block;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .empty-state h2 {
   font-family: 'Fraunces', serif;
   font-size: clamp(1.8rem, 3vw, 2.6rem);
@@ -125,22 +145,12 @@ input {
   color: inherit;
 }
 
-.mosaic-card.is-loading {
-  cursor: default;
-}
-
 .mosaic-card img {
   width: 100%;
   border-radius: 16px;
   display: block;
   box-shadow: 0 16px 30px rgba(0, 0, 0, 0.18);
   transition: transform 0.3s ease;
-}
-
-.mosaic-placeholder {
-  width: 100%;
-  aspect-ratio: 4 / 5;
-  border-radius: 16px;
 }
 
 .mosaic-card:hover img {

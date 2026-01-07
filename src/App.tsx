@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 
 type MetSearchResponse = {
   total: number;
@@ -22,10 +22,10 @@ type MetObject = {
   repository: string;
 };
 
-const PAGE_SIZE = 100;
+const PAGE_SIZE = 50;
 const API_BASE = 'https://collectionapi.metmuseum.org/public/collection/v1';
-const MAX_CONCURRENT = 3;
-const MIN_DELAY_MS = 200;
+const MAX_CONCURRENT = 4;
+const MIN_DELAY_MS = 60;
 
 const fetchObject = async (
   objectID: number,
@@ -36,6 +36,73 @@ const fetchObject = async (
     throw new Error(`Failed to load object ${objectID}`);
   }
   return response.json();
+};
+
+const preloadImage = (url?: string) =>
+  new Promise<void>((resolve) => {
+    if (!url) {
+      resolve();
+      return;
+    }
+    const image = new Image();
+    image.onload = () => resolve();
+    image.onerror = () => resolve();
+    image.src = url;
+  });
+
+type TaskResult<R> =
+  | { ok: true; value: R }
+  | { ok: false; error: unknown };
+
+const runWithConcurrency = async <T, R>(
+  items: T[],
+  limit: number,
+  delayMs: number,
+  worker: (item: T) => Promise<R>,
+) => {
+  const results = new Array<TaskResult<R>>(items.length);
+  let index = 0;
+  let active = 0;
+  let lastStart = 0;
+
+  return new Promise<TaskResult<R>[]>((resolve) => {
+    const launch = () => {
+      if (index >= items.length && active === 0) {
+        resolve(results);
+        return;
+      }
+
+      while (active < limit && index < items.length) {
+        const current = index;
+        index += 1;
+        active += 1;
+
+        const startTask = async () => {
+          const now = Date.now();
+          const wait = Math.max(0, delayMs - (now - lastStart));
+          lastStart = now + wait;
+          if (wait) {
+            await new Promise((timerResolve) => setTimeout(timerResolve, wait));
+          }
+          return worker(items[current]);
+        };
+
+        startTask()
+          .then((result) => {
+            results[current] = { ok: true, value: result };
+          })
+          .catch((error) => {
+            results[current] = { ok: false, error };
+          })
+          .finally(() => {
+            active -= 1;
+            launch();
+          });
+      }
+    };
+
+    launch();
+  });
 };
 
 const formatArtist = (object: MetObject) => {
@@ -58,108 +125,23 @@ export default function App() {
   const [submittedQuery, setSubmittedQuery] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState('');
-  const [objectIDs, setObjectIDs] = useState<number[]>([]);
+  const [results, setResults] = useState<MetObject[]>([]);
   const [selected, setSelected] = useState<MetObject | null>(null);
   const [selectedDetails, setSelectedDetails] = useState<MetObject | null>(
     null,
   );
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [downloadStatus, setDownloadStatus] = useState('');
-  const [loadedById, setLoadedById] = useState<Record<number, MetObject>>({});
   const searchIdRef = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
   const cacheRef = useRef<Map<number, MetObject>>(new Map());
-  const queueRef = useRef<number[]>([]);
-  const pendingRef = useRef<Set<number>>(new Set());
-  const activeRef = useRef(0);
-  const lastStartRef = useRef(0);
-  const observerRef = useRef<IntersectionObserver | null>(null);
-  const tileRefs = useRef<Set<HTMLButtonElement>>(new Set());
 
-  const loadedCount = useMemo(
-    () => Object.keys(loadedById).length,
-    [loadedById],
-  );
+  const loadedCount = useMemo(() => results.length, [results]);
 
   const isEmptyState = useMemo(
     () =>
-      !isSearching && !loadedCount && !objectIDs.length && !submittedQuery,
-    [isSearching, loadedCount, objectIDs.length, submittedQuery],
-  );
-
-  const processQueue = useCallback(
-    (searchId: number, signal?: AbortSignal) => {
-      while (activeRef.current < MAX_CONCURRENT && queueRef.current.length > 0) {
-        const id = queueRef.current.shift();
-        if (id === undefined) {
-          continue;
-        }
-        activeRef.current += 1;
-        const now = Date.now();
-        const wait = Math.max(0, MIN_DELAY_MS - (now - lastStartRef.current));
-        lastStartRef.current = now + wait;
-
-        setTimeout(async () => {
-          try {
-            if (searchIdRef.current !== searchId) {
-              return;
-            }
-            const cached = cacheRef.current.get(id);
-            if (cached) {
-              setLoadedById((prev) => {
-                if (prev[id]) {
-                  return prev;
-                }
-                return { ...prev, [id]: cached };
-              });
-              return;
-            }
-            const item = await fetchObject(id, signal);
-            if (!item.primaryImageSmall && !item.primaryImage) {
-              return;
-            }
-            cacheRef.current.set(id, item);
-            setLoadedById((prev) => {
-              if (prev[id]) {
-                return prev;
-              }
-              return { ...prev, [id]: item };
-            });
-          } catch (err) {
-            if (err instanceof DOMException && err.name === 'AbortError') {
-              return;
-            }
-          } finally {
-            pendingRef.current.delete(id);
-            activeRef.current -= 1;
-            processQueue(searchId, signal);
-          }
-        }, wait);
-      }
-    },
-    [],
-  );
-
-  const enqueueFetch = useCallback(
-    (id: number, searchId: number, signal?: AbortSignal) => {
-      if (pendingRef.current.has(id)) {
-        return;
-      }
-      const cached = cacheRef.current.get(id);
-      if (cached) {
-        setLoadedById((prev) => {
-          if (prev[id]) {
-            return prev;
-          }
-          return { ...prev, [id]: cached };
-        });
-        return;
-      }
-      pendingRef.current.add(id);
-      queueRef.current.push(id);
-      processQueue(searchId, signal);
-    },
-    [processQueue],
+      !isSearching && !loadedCount && !submittedQuery,
+    [isSearching, loadedCount, submittedQuery],
   );
 
   const runSearch = async (term: string) => {
@@ -178,13 +160,9 @@ export default function App() {
     setError('');
     setIsSearching(true);
     setSubmittedQuery(trimmed);
-    setObjectIDs([]);
-    setLoadedById({});
+    setResults([]);
     setSelected(null);
     setSelectedDetails(null);
-    queueRef.current = [];
-    pendingRef.current.clear();
-    tileRefs.current.clear();
 
     try {
       const response = await fetch(
@@ -199,22 +177,53 @@ export default function App() {
       if (searchIdRef.current !== searchId) {
         return;
       }
-      setObjectIDs(ids);
-      if (ids.length > 0) {
-        const cachedItems: Record<number, MetObject> = {};
-        const missing: number[] = [];
-        ids.forEach((id) => {
-        const cached = cacheRef.current.get(id);
-        if (cached) {
-          cachedItems[id] = cached;
-        } else {
-          missing.push(id);
-        }
-      });
-        if (Object.keys(cachedItems).length > 0) {
-          setLoadedById(cachedItems);
-        }
+
+      const objectResults = await runWithConcurrency(
+        ids,
+        MAX_CONCURRENT,
+        MIN_DELAY_MS,
+        async (id) => {
+          const cached = cacheRef.current.get(id);
+          if (cached) {
+            return cached;
+          }
+          const item = await fetchObject(id, controller.signal);
+          cacheRef.current.set(id, item);
+          return item;
+        },
+      );
+
+      if (searchIdRef.current !== searchId) {
+        return;
       }
+
+      const failures = objectResults.filter(
+        (result) => result && !result.ok,
+      ).length;
+      const objects = objectResults.flatMap((result) =>
+        result && result.ok ? [result.value] : [],
+      );
+      const withImages = objects.filter(
+        (item) => item && (item.primaryImageSmall || item.primaryImage),
+      );
+
+      if (!withImages.length && failures > 0) {
+        setError('All artwork requests failed. Please try again.');
+        return;
+      }
+
+      await runWithConcurrency(
+        withImages,
+        MAX_CONCURRENT,
+        MIN_DELAY_MS,
+        (item) => preloadImage(item.primaryImageSmall || item.primaryImage),
+      );
+
+      if (searchIdRef.current !== searchId) {
+        return;
+      }
+
+      setResults(withImages);
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') {
         return;
@@ -237,16 +246,17 @@ export default function App() {
     abortRef.current?.abort();
     setQuery('');
     setSubmittedQuery('');
-    setObjectIDs([]);
-    setLoadedById({});
-    queueRef.current = [];
-    pendingRef.current.clear();
-    tileRefs.current.clear();
+    setResults([]);
     setIsSearching(false);
     setError('');
     setSelected(null);
     setSelectedDetails(null);
     setDownloadStatus('');
+  };
+
+  const handleCloseModal = () => {
+    setSelected(null);
+    setSelectedDetails(null);
   };
 
   const handleSelect = (item: MetObject) => {
@@ -296,40 +306,6 @@ export default function App() {
     }
   };
 
-  useEffect(() => {
-    observerRef.current?.disconnect();
-    observerRef.current = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (!entry.isIntersecting) {
-            return;
-          }
-          const target = entry.target as HTMLElement;
-          const id = Number(target.dataset.objectId);
-          if (!Number.isNaN(id)) {
-            enqueueFetch(id, searchIdRef.current, abortRef.current?.signal);
-          }
-          observerRef.current?.unobserve(target);
-        });
-      },
-      { rootMargin: '400px' },
-    );
-    tileRefs.current.forEach((node) => observerRef.current?.observe(node));
-
-    return () => {
-      observerRef.current?.disconnect();
-      observerRef.current = null;
-    };
-  }, [enqueueFetch]);
-
-  const registerTile = useCallback((node: HTMLButtonElement | null) => {
-    if (!node) {
-      return;
-    }
-    tileRefs.current.add(node);
-    observerRef.current?.observe(node);
-  }, []);
-
   const activeDetails = selectedDetails || selected;
 
   return (
@@ -352,16 +328,9 @@ export default function App() {
           </div>
         )}
 
-        {isSearching && !loadedCount && (
-          <div className="empty-state">
-            <h2>Searching…</h2>
-            <p>Gathering artworks from the collection.</p>
-          </div>
-        )}
-
         {!isSearching &&
           submittedQuery &&
-          !objectIDs.length &&
+          !results.length &&
           !error && (
           <div className="empty-state">
             <h2>No results</h2>
@@ -371,41 +340,39 @@ export default function App() {
 
         {error && <div className="error-banner">{error}</div>}
 
-        {!!objectIDs.length && (
+        {isSearching && (
+          <div className="empty-state">
+            <div className="spinner" aria-hidden="true" />
+            <p>Loading artworks and images…</p>
+          </div>
+        )}
+
+        {!!results.length && !isSearching && (
           <>
             <div className="mosaic-grid">
-              {objectIDs.map((objectID) => {
-                const item = loadedById[objectID];
+              {results.map((item) => {
                 return (
                   <button
-                    key={objectID}
-                    className={`mosaic-card${item ? '' : ' is-loading'}`}
+                    key={item.objectID}
+                    className="mosaic-card"
                     type="button"
-                    onClick={() => item && handleSelect(item)}
-                    ref={registerTile}
-                    data-object-id={objectID}
-                    disabled={!item}
+                    onClick={() => handleSelect(item)}
                   >
-                    {item ? (
-                      <>
-                        <img
-                          src={item.primaryImageSmall || item.primaryImage}
-                          alt={item.title}
-                          loading="lazy"
-                        />
-                        <div className="mosaic-caption">
-                          <span>{item.title}</span>
-                          <small>{item.objectDate || item.objectName}</small>
-                        </div>
-                      </>
-                    ) : (
-                      <div className="mosaic-placeholder" aria-hidden="true" />
-                    )}
+                    <img
+                      src={item.primaryImageSmall || item.primaryImage}
+                      alt={item.title}
+                    />
+                    <div className="mosaic-caption">
+                      <span>{item.title}</span>
+                      <small>{item.objectDate || item.objectName}</small>
+                    </div>
                   </button>
                 );
               })}
             </div>
-            <div className="sentinel">Showing up to {PAGE_SIZE} results.</div>
+            <div className="sentinel">
+              Showing {results.length} of up to {PAGE_SIZE} results.
+            </div>
           </>
         )}
       </main>
@@ -413,7 +380,7 @@ export default function App() {
       <form className="search-bar" onSubmit={handleSubmit}>
         <input
           type="search"
-          placeholder="Search the collection..."
+          placeholder="Search the collection"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           aria-label="Search the Met collection"
@@ -424,12 +391,15 @@ export default function App() {
       </form>
 
       {activeDetails && (
-        <div className="modal-overlay" onClick={() => setSelected(null)}>
-          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+        <div className="modal-overlay" onClick={handleCloseModal}>
+          <div
+            className="modal-card"
+            onClick={(event) => event.stopPropagation()}
+          >
             <button
               type="button"
               className="close-button"
-              onClick={() => setSelected(null)}
+              onClick={handleCloseModal}
             >
               Close
             </button>

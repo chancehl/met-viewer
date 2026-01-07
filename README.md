@@ -9,6 +9,32 @@ Electron + Vite + React app for exploring The Met collection and downloading ima
 
 If you see a security warning, follow the on-screen prompts to allow the app to open.
 
+## Build it yourself (one-time, macOS + Windows)
+
+This builds a standalone app. You do not need to keep Node running after the build.
+
+### macOS
+
+```sh
+git clone https://github.com/chancehl/met-viewer
+cd met-viewer
+npm ci
+npm run make
+```
+
+Open the app at `out/make/**/met-viewer.app` (drag to Applications if you want).
+
+### Windows
+
+```bat
+git clone https://github.com/chancehl/met-viewer
+cd met-viewer
+npm ci
+npm run make
+```
+
+Run the installer from `out\\make\\**\\*.exe`.
+
 ## Requirements (for developers)
 
 - Node.js 20+
